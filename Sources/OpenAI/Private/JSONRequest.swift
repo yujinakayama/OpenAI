@@ -25,14 +25,13 @@ final class JSONRequest<ResultType> {
 
 extension JSONRequest: URLRequestBuildable {
     
-    func build(token: String, organizationIdentifier: String?, timeoutInterval: TimeInterval) throws -> URLRequest {
+    func build(headers: [String: String], timeoutInterval: TimeInterval) throws -> URLRequest {
         var request = URLRequest(url: url, timeoutInterval: timeoutInterval)
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        if let organizationIdentifier {
-            request.setValue(organizationIdentifier, forHTTPHeaderField: "OpenAI-Organization")
-        }
         request.httpMethod = method
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        for (name, value) in headers {
+            request.setValue(value, forHTTPHeaderField: name)
+        }
         if let body = body {
             request.httpBody = try JSONEncoder().encode(body)
         }

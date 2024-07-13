@@ -10,29 +10,76 @@ import Foundation
 import FoundationNetworking
 #endif
 
+public protocol APIEndpoint {
+    var baseURL: URL { get }
+    var httpHeaders: [String : String] { get }
+}
+
+public struct OpenAIAPIEndPoint: APIEndpoint {
+    /// OpenAI API token. See https://platform.openai.com/docs/api-reference/authentication
+    public let token: String
+
+    /// Optional OpenAI organization identifier. See https://platform.openai.com/docs/api-reference/authentication
+    public let organizationIdentifier: String?
+
+    public init(token: String, organizationIdentifier: String? = nil) {
+        self.token = token
+        self.organizationIdentifier = organizationIdentifier
+    }
+
+    public let baseURL = URL(string: "https://api.openai.com/v1")!
+
+    public var httpHeaders: [String : String] {
+        var headers = [
+            "Authorization": "Bearer \(token)",
+        ]
+        if let organizationIdentifier {
+            headers["OpenAI-Organization"] = organizationIdentifier
+        }
+        return headers
+    }
+}
+
+public struct AzureAPIEndPoint: APIEndpoint {
+    public let token: String
+    public let resourceName: String
+    public let deploymentName: String
+    public let apiVersion: String
+
+    public init(token: String, resourceName: String, deploymentName: String, apiVersion: String) {
+        self.token = token
+        self.resourceName = resourceName
+        self.deploymentName = deploymentName
+        self.apiVersion = apiVersion
+    }
+
+    // https://learn.microsoft.com/en-us/azure/ai-services/openai/reference#rest-api-versioning
+    public var baseURL: URL {
+        var components = URLComponents()
+        components.scheme = "https"
+        components.host = "\(resourceName).openai.azure.com"
+        components.path = "/openai/deployments/\(deploymentName)"
+        components.query = "api-version=\(apiVersion)"
+        return components.url!
+    }
+
+    public var httpHeaders: [String : String] {
+        return [
+            "api-key": token
+        ]
+    }
+}
+
 final public class OpenAI: OpenAIProtocol {
 
     public struct Configuration {
-        
-        /// OpenAI API token. See https://platform.openai.com/docs/api-reference/authentication
-        public let token: String
-        
-        /// Optional OpenAI organization identifier. See https://platform.openai.com/docs/api-reference/authentication
-        public let organizationIdentifier: String?
-        
-        /// API host. Set this property if you use some kind of proxy or your own server. Default is api.openai.com
-        public let host: String
-        public let port: Int
-        public let scheme: String
+        public let endpoint: APIEndpoint
+
         /// Default request timeout
         public let timeoutInterval: TimeInterval
         
-        public init(token: String, organizationIdentifier: String? = nil, host: String = "api.openai.com", port: Int = 443, scheme: String = "https", timeoutInterval: TimeInterval = 60.0) {
-            self.token = token
-            self.organizationIdentifier = organizationIdentifier
-            self.host = host
-            self.port = port
-            self.scheme = scheme
+        public init(endpoint: APIEndpoint, timeoutInterval: TimeInterval = 60.0) {
+            self.endpoint = endpoint
             self.timeoutInterval = timeoutInterval
         }
     }
@@ -43,7 +90,8 @@ final public class OpenAI: OpenAIProtocol {
     public let configuration: Configuration
 
     public convenience init(apiToken: String) {
-        self.init(configuration: Configuration(token: apiToken), session: URLSession.shared)
+        let endpoint = OpenAIAPIEndPoint(token: apiToken, organizationIdentifier: nil)
+        self.init(configuration: Configuration(endpoint: endpoint), session: URLSession.shared)
     }
     
     public convenience init(configuration: Configuration) {
@@ -126,8 +174,7 @@ extension OpenAI {
 
     func performRequest<ResultType: Codable>(request: any URLRequestBuildable, completion: @escaping (Result<ResultType, Error>) -> Void) {
         do {
-            let request = try request.build(token: configuration.token, 
-                                            organizationIdentifier: configuration.organizationIdentifier,
+            let request = try request.build(headers: configuration.endpoint.httpHeaders,
                                             timeoutInterval: configuration.timeoutInterval)
             let task = session.dataTask(with: request) { data, _, error in
                 if let error = error {
@@ -151,8 +198,7 @@ extension OpenAI {
     
     func performStreamingRequest<ResultType: Codable>(request: any URLRequestBuildable, onResult: @escaping (Result<ResultType, Error>) -> Void, completion: ((Error?) -> Void)?) {
         do {
-            let request = try request.build(token: configuration.token, 
-                                            organizationIdentifier: configuration.organizationIdentifier,
+            let request = try request.build(headers: configuration.endpoint.httpHeaders,
                                             timeoutInterval: configuration.timeoutInterval)
             let session = StreamingSession<ResultType>(urlRequest: request)
             session.onReceiveContent = {_, object in
@@ -174,8 +220,7 @@ extension OpenAI {
     
     func performSpeechRequest(request: any URLRequestBuildable, completion: @escaping (Result<AudioSpeechResult, Error>) -> Void) {
         do {
-            let request = try request.build(token: configuration.token, 
-                                            organizationIdentifier: configuration.organizationIdentifier,
+            let request = try request.build(headers: configuration.endpoint.httpHeaders,
                                             timeoutInterval: configuration.timeoutInterval)
             
             let task = session.dataTask(with: request) { data, _, error in
@@ -198,32 +243,31 @@ extension OpenAI {
 extension OpenAI {
     
     func buildURL(path: String) -> URL {
-        var components = URLComponents()
-        components.scheme = configuration.scheme
-        components.host = configuration.host
-        components.port = configuration.port
-        components.path = path
-        return components.url!
+        if #available(iOS 16, *) {
+            return configuration.endpoint.baseURL.appending(path: path)
+        } else {
+            return configuration.endpoint.baseURL.appendingPathComponent(path)
+        }
     }
 }
 
 typealias APIPath = String
 extension APIPath {
     
-    static let completions = "/v1/completions"
-    static let embeddings = "/v1/embeddings"
-    static let chats = "/v1/chat/completions"
-    static let edits = "/v1/edits"
-    static let models = "/v1/models"
-    static let moderations = "/v1/moderations"
+    static let completions = "/completions"
+    static let embeddings = "/embeddings"
+    static let chats = "/chat/completions"
+    static let edits = "/edits"
+    static let models = "/models"
+    static let moderations = "/moderations"
     
-    static let audioSpeech = "/v1/audio/speech"
-    static let audioTranscriptions = "/v1/audio/transcriptions"
-    static let audioTranslations = "/v1/audio/translations"
+    static let audioSpeech = "/audio/speech"
+    static let audioTranscriptions = "/audio/transcriptions"
+    static let audioTranslations = "/audio/translations"
     
-    static let images = "/v1/images/generations"
-    static let imageEdits = "/v1/images/edits"
-    static let imageVariations = "/v1/images/variations"
+    static let images = "/images/generations"
+    static let imageEdits = "/images/edits"
+    static let imageVariations = "/images/variations"
     
     func withPath(_ path: String) -> String {
         self + "/" + path
